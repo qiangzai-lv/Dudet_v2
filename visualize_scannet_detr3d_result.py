@@ -99,19 +99,11 @@ def draw_boxes(axis, boxes: np.ndarray, color: str, labels: np.ndarray,
         axis.text(*corners[6], text, color=color, fontsize=7)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--result', type=Path, required=True)
-    parser.add_argument('--data-root', type=Path, default=Path('/root/damodel-tmp/data/ScanNet_processed'))
-    parser.add_argument('--ann-file', type=Path)
-    parser.add_argument('--output-dir', type=Path)
-    parser.add_argument('--score-thr', type=float, default=0.05)
-    parser.add_argument('--max-points', type=int, default=60000)
-    args = parser.parse_args()
-
-    result = torch.load(args.result, map_location='cpu', weights_only=False)
-    ann_file = args.ann_file or args.data_root / 'scannet_infos_val_pts.pkl'
-    points, colors, gt_boxes, gt_labels = load_scene(result['scene_id'], args.data_root, ann_file)
+def visualize_result(result_path: Path, ann_file: Path, args: argparse.Namespace,
+                     output_dir: Path) -> dict:
+    result = torch.load(result_path, map_location='cpu', weights_only=False)
+    points, colors, gt_boxes, gt_labels = load_scene(
+        result['scene_id'], args.data_root, ann_file)
     pred_mask = result['pred_scores'] >= args.score_thr
     pred_boxes = result['pred_boxes'][pred_mask]
     pred_labels = result['pred_labels'][pred_mask]
@@ -120,12 +112,13 @@ def main() -> None:
         indices = np.linspace(0, len(points) - 1, args.max_points, dtype=np.int64)
         points, colors = points[indices], colors[indices]
 
-    output_dir = args.output_dir or args.result.with_suffix('')
     output_dir.mkdir(parents=True, exist_ok=True)
     figure = plt.figure(figsize=(13, 10))
     axes = [figure.add_subplot(2, 2, index + 1, projection='3d') for index in range(3)]
-    for axis, (elevation, azimuth, title) in zip(axes, ((25, -60, 'Perspective'), (90, -90, 'Top-down'), (0, -90, 'Front'))):
-        axis.scatter(points[:, 0], points[:, 1], points[:, 2], c=colors / 255., s=.35, alpha=.55)
+    for axis, (elevation, azimuth, title) in zip(
+            axes, ((25, -60, 'Perspective'), (90, -90, 'Top-down'), (0, -90, 'Front'))):
+        axis.scatter(points[:, 0], points[:, 1], points[:, 2],
+                     c=colors / 255., s=.35, alpha=.55)
         draw_boxes(axis, gt_boxes, 'lime', gt_labels, None)
         draw_boxes(axis, pred_boxes, 'red', pred_labels, pred_scores)
         axis.view_init(elev=elevation, azim=azimuth)
@@ -139,7 +132,37 @@ def main() -> None:
                    gt_count=int(len(gt_boxes)), pred_count=int(len(pred_boxes)),
                    score_threshold=args.score_thr)
     (output_dir / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
-    print(json.dumps(summary, indent=2))
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--result', type=Path, required=True,
+                        help='A result .pt file or a directory containing .pt files.')
+    parser.add_argument('--data-root', type=Path,
+                        default=Path('/mnt/workspace/data/ScanNet_processed'))
+    parser.add_argument('--ann-file', type=Path)
+    parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--score-thr', type=float, default=0.05)
+    parser.add_argument('--max-points', type=int, default=60000)
+    args = parser.parse_args()
+
+    if args.result.is_file():
+        result_paths = [args.result]
+        output_dirs = [args.output_dir or args.result.with_suffix('')]
+    elif args.result.is_dir():
+        result_paths = sorted(args.result.glob('*.pt'))
+        if not result_paths:
+            raise FileNotFoundError(f'No .pt result files found in {args.result}')
+        base_dir = args.output_dir or args.result / 'visualizations'
+        output_dirs = [base_dir / path.stem for path in result_paths]
+    else:
+        raise FileNotFoundError(args.result)
+
+    ann_file = args.ann_file or args.data_root / 'scannet_infos_val_pts.pkl'
+    for result_path, output_dir in zip(result_paths, output_dirs):
+        summary = visualize_result(result_path, ann_file, args, output_dir)
+        print(json.dumps(summary, ensure_ascii=False))
 
 
 if __name__ == '__main__':
